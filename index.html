@@ -36,11 +36,34 @@ const MAX_FILES_PER_REPO = 10;
 const MAX_FILE_SIZE = 100000;
 const ANALYZABLE = new Set([
   "py","js","ts","tsx","jsx","java","c","cpp","h","hpp","cs","go","rs",
-  "rb","php","swift","kt","scala","sh","bash","lua","r","m","mm"
+  "rb","php","swift","kt","scala","sh","bash","lua","r","m","mm",
+  "html","css","vue","svelte","zig","ex","exs","erl","hs","ml","pl","pm",
+  "ipynb"
 ]);
 
 function ext(f) { const p = f.split("."); return p.length > 1 ? p.pop().toLowerCase() : ""; }
 function canAnalyze(f) { return ANALYZABLE.has(ext(f)); }
+
+// Extract Python/JS/R code cells from a Jupyter notebook JSON string
+function extractNotebookCode(jsonStr) {
+  try {
+    var nb = JSON.parse(jsonStr);
+    var cells = nb.cells || [];
+    var codeLines = [];
+    cells.forEach(function(cell) {
+      if (cell.cell_type === "code") {
+        var src = Array.isArray(cell.source) ? cell.source.join("") : (cell.source || "");
+        // Skip cells that are just magic commands or shell commands
+        var trimmed = src.trim();
+        if (trimmed && !trimmed.startsWith("!") && !trimmed.startsWith("%")) {
+          codeLines.push(src);
+          codeLines.push(""); // blank line between cells
+        }
+      }
+    });
+    return codeLines.join("\n");
+  } catch(e) { return null; }
+}
 
 // ─── Analysis Engine ──────────────────────────────────────────────────────────
 
@@ -204,14 +227,26 @@ async function fetchFileContent(url) {
     const r = await fetch(url);
     if (!r.ok) return null;
     const d = await r.json();
-    if (d.encoding === "base64" && d.content) return atob(d.content.replace(/\n/g, ""));
+    if (d.encoding === "base64" && d.content) {
+      // Use TextDecoder to properly handle UTF-8 content (atob breaks on non-ASCII)
+      var raw = d.content.replace(/\n/g, "");
+      var bytes = Uint8Array.from(atob(raw), function(c) { return c.charCodeAt(0); });
+      return new TextDecoder("utf-8").decode(bytes);
+    }
+    // Some files come back with direct content (no encoding)
+    if (d.content) return d.content;
+    // Fallback: try download_url for raw content
+    if (d.download_url) {
+      var raw2 = await fetch(d.download_url);
+      if (raw2.ok) return await raw2.text();
+    }
     return null;
-  } catch { return null; }
+  } catch(err) { console.warn("fetchFileContent error:", url, err); return null; }
 }
 
 async function getRepoFiles(owner, repo, path, depth) {
   path = path || ""; depth = depth || 0;
-  if (depth > 2) return [];
+  if (depth > 3) return [];
   const skip = new Set(["node_modules","vendor","dist","build","__pycache__","venv",".git","target","bin","obj","packages",".next",".nuxt"]);
   try {
     const items = await fetchJSON(GITHUB_API + "/repos/" + owner + "/" + repo + "/contents/" + path);
@@ -219,7 +254,7 @@ async function getRepoFiles(owner, repo, path, depth) {
     let files = [];
     for (const item of items) {
       if (files.length >= MAX_FILES_PER_REPO) break;
-      if (item.type === "file" && canAnalyze(item.name) && item.size < MAX_FILE_SIZE && item.size > 50) {
+      if (item.type === "file" && canAnalyze(item.name) && item.size < MAX_FILE_SIZE && item.size > 10) {
         files.push({ name: item.path, url: item.url, size: item.size });
       } else if (item.type === "dir" && !item.name.startsWith(".") && !skip.has(item.name)) {
         files = files.concat(await getRepoFiles(owner, repo, item.path, depth + 1));
@@ -342,6 +377,7 @@ function App() {
   const [error, setError] = useState("");
   const [results, setResults] = useState(null);
   const [history, setHistory] = useState([]);
+  const [includeForks, setIncludeForks] = useState(true);
 
   var grade = function(s) { return s >= 90 ? "A+" : s >= 80 ? "A" : s >= 70 ? "B+" : s >= 60 ? "B" : s >= 50 ? "C" : s >= 40 ? "D" : "F"; };
 
@@ -355,11 +391,11 @@ function App() {
       var profile = await fetchJSON(GITHUB_API + "/users/" + user);
       setProgress("Fetching repositories...");
       var repos = await fetchJSON(GITHUB_API + "/users/" + user + "/repos?sort=updated&per_page=30");
-      repos = repos.filter(function(r) { return !r.fork; })
+      repos = repos.filter(function(r) { return includeForks || !r.fork; })
         .sort(function(a, b) { return (b.stargazers_count + b.size) - (a.stargazers_count + a.size); })
         .slice(0, MAX_REPOS);
 
-      if (repos.length === 0) { setError("No public non-fork repositories found."); setLoading(false); return; }
+      if (repos.length === 0) { setError("No public repositories found." + (!includeForks ? " Try enabling 'Include forked repos' above." : "")); setLoading(false); return; }
 
       var allFiles = [], repoSums = [];
       for (var ri = 0; ri < repos.length; ri++) {
@@ -368,9 +404,19 @@ function App() {
         var files = await getRepoFiles(user, repo.name);
         var repoResults = [];
         for (var fi = 0; fi < files.length; fi++) {
-          var content = await fetchFileContent(files[fi].url);
-          if (content && content.length > 20) {
-            var result = analyzeFile(content, files[fi].name);
+          var rawContent = await fetchFileContent(files[fi].url);
+          if (!rawContent) continue;
+          // Handle Jupyter notebooks: extract code cells
+          var content = rawContent;
+          var fname = files[fi].name;
+          if (ext(fname) === "ipynb") {
+            content = extractNotebookCode(rawContent);
+            if (!content) continue;
+            fname = fname.replace(/\.ipynb$/, ".py"); // treat extracted code as Python
+          }
+          if (content.length > 20) {
+            var result = analyzeFile(content, fname);
+            result.filename = files[fi].name; // show original .ipynb name
             repoResults.push(result);
             allFiles.push(Object.assign({}, result, { repo: repo.name }));
           }
@@ -381,7 +427,7 @@ function App() {
         }
       }
 
-      if (allFiles.length === 0) { setError("No analyzable source files found."); setLoading(false); return; }
+      if (allFiles.length === 0) { setError("No analyzable source files found. This user's repos may only contain non-code files, or the files may be too large/small to analyze. Repos scanned: " + repos.map(function(r){return r.name;}).join(", ")); setLoading(false); return; }
 
       var overall = Math.round(allFiles.reduce(function(s, r) { return s + r.totalScore; }, 0) / allFiles.length);
       var catAvgs = [0, 1, 2].map(function(i) {
@@ -409,7 +455,7 @@ function App() {
       setHistory(function(h) { return [{ user: user, score: overall, time: new Date() }].concat(h).slice(0, 10); });
     } catch (err) { setError(err.message); }
     setLoading(false);
-  }, [username]);
+  }, [username, includeForks]);
 
   // ─── Render ───────────────────────────────────────────────────────────────────
 
@@ -455,6 +501,19 @@ function App() {
           disabled: loading || !username.trim(),
           style: { padding: "14px 32px", borderRadius: 12, border: "none", background: loading ? "#334155" : "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 15, fontWeight: 600, cursor: loading ? "wait" : "pointer", opacity: !username.trim() ? 0.5 : 1, whiteSpace: "nowrap" }
         }, loading ? "Analyzing..." : "Analyze")
+      ),
+
+      // Options row
+      e("div", { style: { display: "flex", gap: 20, marginBottom: 24, marginTop: -16 } },
+        e("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#94a3b8", cursor: "pointer", userSelect: "none" } },
+          e("input", {
+            type: "checkbox",
+            checked: includeForks,
+            onChange: function() { setIncludeForks(!includeForks); },
+            style: { accentColor: "#6366f1", width: 15, height: 15, cursor: "pointer" }
+          }),
+          "Include forked repos"
+        )
       ),
 
       // Recent searches
