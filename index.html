@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GitHub Code Analyzer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-font-smoothing: antialiased; }
+  body { background: #020617; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+  input:focus { border-color: #6366f1 !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+  button:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+  button { transition: all .15s ease; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const e = React.createElement;
+const { useState, useEffect, useRef, useCallback, Fragment } = React;
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const GITHUB_API = "https://api.github.com";
+const MAX_REPOS = 8;
+const MAX_FILES_PER_REPO = 10;
+const MAX_FILE_SIZE = 100000;
+const ANALYZABLE = new Set([
+  "py","js","ts","tsx","jsx","java","c","cpp","h","hpp","cs","go","rs",
+  "rb","php","swift","kt","scala","sh","bash","lua","r","m","mm"
+]);
+
+function ext(f) { const p = f.split("."); return p.length > 1 ? p.pop().toLowerCase() : ""; }
+function canAnalyze(f) { return ANALYZABLE.has(ext(f)); }
+
+// ─── Analysis Engine ──────────────────────────────────────────────────────────
+
+function analyzeCodeQuality(content, filename) {
+  const lines = content.split("\n");
+  const nonEmpty = lines.filter(l => l.trim().length > 0);
+  let score = 40, findings = [];
+
+  const funcPattern = /(?:function\s+\w+|def\s+\w+|fn\s+\w+|\w+\s*=\s*(?:async\s+)?(?:function|\([^)]*\)\s*=>)|\w+\s*\([^)]*\)\s*\{|func\s+\w+|public\s+\w+\s+\w+\s*\()/g;
+  const funcCount = (content.match(funcPattern) || []).length;
+  if (nonEmpty.length > 0 && funcCount > 0) {
+    const avg = nonEmpty.length / funcCount;
+    if (avg > 60) { score -= 8; findings.push({ type: "warning", msg: "Very long functions (avg >60 lines)" }); }
+    else if (avg > 40) { score -= 4; findings.push({ type: "warning", msg: "Long functions (avg >40 lines)" }); }
+    else if (avg <= 20) { findings.push({ type: "good", msg: "Well-decomposed functions" }); }
+  }
+
+  const singleChar = (content.match(/(?:let|var|const|int|float|double|string|auto)\s+[a-z]\s*[=;,)]/g) || []).length;
+  const generic = (content.match(/(?:let|var|const)\s+(?:temp|tmp|data|val|res|ret|obj|arr|str|num|flag)\s*=/g) || []).length;
+  if (singleChar > 5) { score -= 5; findings.push({ type: "warning", msg: singleChar + " single-character variable names" }); }
+  if (generic > 3) { score -= 3; findings.push({ type: "info", msg: generic + " generic variable names (temp, data, etc.)" }); }
+
+  const commentPats = [/^\s*\/\//, /^\s*#(?!!)/, /^\s*\/\*/, /^\s*\*/, /^\s*\*\//, /^\s*"""/, /^\s*'''/, /^\s*--/];
+  const commentLines = lines.filter(l => commentPats.some(p => p.test(l))).length;
+  const ratio = nonEmpty.length > 0 ? commentLines / nonEmpty.length : 0;
+  if (ratio < 0.03 && nonEmpty.length > 30) { score -= 4; findings.push({ type: "warning", msg: "Very few comments (" + (ratio * 100).toFixed(1) + "%)" }); }
+  else if (ratio >= 0.1 && ratio <= 0.3) { findings.push({ type: "good", msg: "Healthy comment ratio (" + (ratio * 100).toFixed(1) + "%)" }); }
+
+  const freq = {};
+  nonEmpty.forEach(l => { const t = l.trim(); if (t.length > 15) freq[t] = (freq[t] || 0) + 1; });
+  const dupes = Object.values(freq).filter(c => c > 2).length;
+  if (dupes > 10) { score -= 6; findings.push({ type: "warning", msg: "Significant code duplication (" + dupes + " repeated patterns)" }); }
+  else if (dupes > 5) { score -= 3; findings.push({ type: "info", msg: "Some code duplication detected" }); }
+
+  let maxDepth = 0, curDepth = 0;
+  lines.forEach(line => {
+    curDepth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+    if (curDepth > maxDepth) maxDepth = curDepth;
+  });
+  if (maxDepth > 8) { score -= 6; findings.push({ type: "warning", msg: "Deep nesting (max depth: " + maxDepth + ")" }); }
+  else if (maxDepth > 5) { score -= 3; findings.push({ type: "info", msg: "Moderate nesting depth (" + maxDepth + ")" }); }
+  else if (maxDepth <= 4 && nonEmpty.length > 10) { findings.push({ type: "good", msg: "Clean, shallow nesting" }); }
+
+  const longLines = lines.filter(l => l.length > 120).length;
+  if (longLines > lines.length * 0.2) { score -= 3; findings.push({ type: "info", msg: longLines + " lines exceed 120 chars" }); }
+
+  const tabs = lines.filter(l => l.startsWith("\t")).length;
+  const spaces = lines.filter(l => /^ {2,}/.test(l)).length;
+  if (tabs > 5 && spaces > 5) { score -= 3; findings.push({ type: "warning", msg: "Mixed tabs and spaces" }); }
+
+  if (nonEmpty.length > 50 && !/try\s*\{|try:|except|catch\s*\(|rescue|recover/.test(content) && !/throw\s|raise\s|panic\(/.test(content)) {
+    score -= 3; findings.push({ type: "info", msg: "No error handling patterns detected" });
+  } else if (/try\s*\{|try:|except|catch\s*\(/.test(content)) {
+    findings.push({ type: "good", msg: "Error handling present" });
+  }
+
+  return { score: Math.max(0, score), findings, category: "Code Quality", maxScore: 40 };
+}
+
+function analyzePerformance(content) {
+  let score = 30, findings = [];
+
+  const nested = (content.match(/(?:for|while)[^{]*\{[^}]*(?:for|while)/gs) || []).length;
+  if (nested > 3) { score -= 8; findings.push({ type: "warning", msg: nested + " nested loop patterns (potential O(n\u00B2)+)" }); }
+  else if (nested > 0) { score -= 3; findings.push({ type: "info", msg: nested + " nested loop(s) \u2014 review for optimization" }); }
+
+  if (/(?:for|while)[^{]*\{[^}]*(?:for|while)[^{]*\{[^}]*(?:for|while)/gs.test(content)) {
+    score -= 6; findings.push({ type: "warning", msg: "Triple-nested loops detected (O(n\u00B3))" });
+  }
+  if (/(?:for|while)[^{]*\{[^}]*(?:\+\=\s*["'`]|\.concat\(|string\s*\+)/gs.test(content)) {
+    score -= 4; findings.push({ type: "warning", msg: "String concatenation inside loop" });
+  }
+
+  const recursive = (content.match(/function\s+(\w+)[^{]*\{[^}]*\1\s*\(/gs) || []).length;
+  const hasMemo = /memo|cache|lru_cache|@cache|memoize/.test(content);
+  if (recursive > 0 && !hasMemo) { score -= 4; findings.push({ type: "info", msg: "Recursion without memoization" }); }
+  else if (recursive > 0 && hasMemo) { findings.push({ type: "good", msg: "Memoized recursion" }); }
+
+  [
+    { p: /\.indexOf\([^)]+\)\s*!==?\s*-1/g, m: "indexOf for existence check (use includes/Set)", d: 2 },
+    { p: /Array\(.*?\)\.fill|new Array\(\d{4,}\)/g, m: "Large array allocation", d: 3 },
+    { p: /JSON\.parse\(JSON\.stringify/g, m: "Deep clone via JSON (use structuredClone)", d: 2 },
+    { p: /document\.querySelector.*(?:for|while|forEach)/gs, m: "DOM queries inside loops", d: 4 },
+    { p: /SELECT\s+\*/gi, m: "SELECT * queries (specify columns)", d: 2 },
+    { p: /sleep\s*\(\s*\d+\s*\)|time\.sleep|Thread\.sleep/g, m: "Blocking sleep calls", d: 3 },
+    { p: /\.sort\(\).*\.sort\(\)|sorted\(.*sorted\(/gs, m: "Redundant sorting", d: 3 },
+  ].forEach(({ p, m, d }) => { if (p.test(content)) { score -= d; findings.push({ type: "info", msg: m }); } });
+
+  [
+    { p: /\bSet\b|\bHashSet\b|\bHashMap\b|\bdict\b|\bunordered_map\b/, m: "Uses hash-based data structures" },
+    { p: /async\s+|await\s+|Promise|Future|goroutine|spawn/, m: "Async/concurrent patterns" },
+    { p: /lazy|generator|yield|Iterator|stream\(\)/, m: "Lazy evaluation patterns" },
+    { p: /binary.?search|bisect|lower_bound/, m: "Binary search usage" },
+  ].forEach(({ p, m }) => { if (p.test(content)) findings.push({ type: "good", msg: m }); });
+
+  return { score: Math.max(0, score), findings, category: "Runtime Performance", maxScore: 30 };
+}
+
+function analyzeMemory(content) {
+  let score = 30, findings = [];
+
+  if (/(?:for|while)[^{]*\{[^}]*(?:new\s+\w+\[|malloc|calloc|new\s+Array|new\s+Map|new\s+Set|\[\]\s*=|list\(\)|dict\(\))/gs.test(content)) {
+    score -= 6; findings.push({ type: "warning", msg: "Object allocation inside loops" });
+  }
+
+  const opens = /open\(|fopen|createReadStream|new\s+(?:File|Stream|Connection|Socket)|connect\(|\.cursor\(\)/.test(content);
+  const closes = /\.close\(|\.dispose\(|\.release\(|\.end\(|\.destroy\(|finally|with\s+open|using\s|defer\s/.test(content);
+  if (opens && !closes) { score -= 6; findings.push({ type: "warning", msg: "Resources opened without visible cleanup" }); }
+  else if (opens && closes) { findings.push({ type: "good", msg: "Resource cleanup patterns present" }); }
+
+  if (/with\s+open|using\s*\(|try-with-resources|defer\s+|unique_ptr|shared_ptr/.test(content)) {
+    findings.push({ type: "good", msg: "RAII/context managers for resource safety" });
+  }
+
+  const globals = (content.match(/^(?:var|let)\s+\w+\s*=\s*(?:\[|\{|new\s)/gm) || []).length;
+  if (globals > 5) { score -= 4; findings.push({ type: "warning", msg: globals + " global mutable variables" }); }
+
+  [
+    { p: /addEventListener(?!.*removeEventListener)/gs, m: "Event listeners without cleanup", d: 4 },
+    { p: /setInterval(?!.*clearInterval)/gs, m: "setInterval without clearInterval", d: 4 },
+    { p: /setTimeout(?!.*clearTimeout).*setTimeout/gs, m: "Multiple timeouts without cleanup", d: 3 },
+    { p: /\.subscribe\((?!.*\.unsubscribe)/gs, m: "Subscriptions without unsubscribe", d: 3 },
+  ].forEach(({ p, m, d }) => { if (p.test(content)) { score -= d; findings.push({ type: "warning", msg: m }); } });
+
+  const loadsAll = /readFileSync|read_to_string|readAll|\.read\(\)\s*$|slurp|file_get_contents/m.test(content);
+  const streams = /createReadStream|BufferedReader|StreamReader|io\.Reader|BufRead|chunk|pipe\(/.test(content);
+  if (loadsAll && !streams) { score -= 3; findings.push({ type: "info", msg: "Reads entire files into memory" }); }
+  else if (streams) { findings.push({ type: "good", msg: "Uses streaming/buffered I/O" }); }
+
+  if (/cache|LRU|memoize|WeakMap|WeakRef|lru_cache|@cache/.test(content)) {
+    findings.push({ type: "good", msg: "Caching/memoization patterns" });
+  }
+  if (/\.slice\(\)|\.map\(.*=>.*\)\.map\(|\.filter\(.*\)\.map\(.*\)\.filter\(/.test(content)) {
+    score -= 2; findings.push({ type: "info", msg: "Potential unnecessary data copies" });
+  }
+
+  return { score: Math.max(0, score), findings, category: "Memory Management", maxScore: 30 };
+}
+
+function analyzeFile(content, filename) {
+  const q = analyzeCodeQuality(content, filename);
+  const p = analyzePerformance(content);
+  const m = analyzeMemory(content);
+  return { filename, totalScore: q.score + p.score + m.score, categories: [q, p, m], lineCount: content.split("\n").length };
+}
+
+// ─── GitHub API ───────────────────────────────────────────────────────────────
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) {
+    if (r.status === 403) throw new Error("GitHub API rate limit reached (60 req/hr without token). Try again later.");
+    if (r.status === 404) throw new Error("User not found on GitHub.");
+    throw new Error("GitHub API error: " + r.status);
+  }
+  return r.json();
+}
+
+async function fetchFileContent(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d.encoding === "base64" && d.content) return atob(d.content.replace(/\n/g, ""));
+    return null;
+  } catch { return null; }
+}
+
+async function getRepoFiles(owner, repo, path, depth) {
+  path = path || ""; depth = depth || 0;
+  if (depth > 2) return [];
+  const skip = new Set(["node_modules","vendor","dist","build","__pycache__","venv",".git","target","bin","obj","packages",".next",".nuxt"]);
+  try {
+    const items = await fetchJSON(GITHUB_API + "/repos/" + owner + "/" + repo + "/contents/" + path);
+    if (!Array.isArray(items)) return [];
+    let files = [];
+    for (const item of items) {
+      if (files.length >= MAX_FILES_PER_REPO) break;
+      if (item.type === "file" && canAnalyze(item.name) && item.size < MAX_FILE_SIZE && item.size > 50) {
+        files.push({ name: item.path, url: item.url, size: item.size });
+      } else if (item.type === "dir" && !item.name.startsWith(".") && !skip.has(item.name)) {
+        files = files.concat(await getRepoFiles(owner, repo, item.path, depth + 1));
+      }
+    }
+    return files.slice(0, MAX_FILES_PER_REPO);
+  } catch { return []; }
+}
+
+// ─── Components ───────────────────────────────────────────────────────────────
+
+function ScoreGauge({ score, size }) {
+  size = size || 180;
+  const ref = useRef(null);
+  useEffect(function() {
+    if (!ref.current) return;
+    const svg = d3.select(ref.current);
+    svg.selectAll("*").remove();
+    const g = svg.attr("width", size).attr("height", size)
+      .append("g").attr("transform", "translate(" + size/2 + "," + (size/2 + 10) + ")");
+    const radius = size * 0.38;
+    const arc = d3.arc().innerRadius(radius - 14).outerRadius(radius).cornerRadius(7);
+
+    g.append("path")
+      .datum({ startAngle: -Math.PI * 0.75, endAngle: Math.PI * 0.75 })
+      .attr("d", arc).attr("fill", "#1e293b");
+
+    const scoreAngle = -Math.PI * 0.75 + Math.PI * 1.5 * (score / 100);
+    const color = score >= 75 ? "#10b981" : score >= 50 ? "#f59e0b" : score >= 25 ? "#f97316" : "#ef4444";
+
+    g.append("path")
+      .datum({ startAngle: -Math.PI * 0.75, endAngle: -Math.PI * 0.75 })
+      .attr("d", arc).attr("fill", color)
+      .transition().duration(1400).ease(d3.easeCubicOut)
+      .attrTween("d", function() {
+        var interp = d3.interpolate(-Math.PI * 0.75, scoreAngle);
+        return function(t) { return arc({ startAngle: -Math.PI * 0.75, endAngle: interp(t) }); };
+      });
+
+    var text = g.append("text").attr("text-anchor", "middle").attr("dy", "0.1em")
+      .attr("fill", "#f1f5f9").attr("font-size", size * 0.22 + "px").attr("font-weight", "700").text("0");
+    text.transition().duration(1400).ease(d3.easeCubicOut)
+      .tween("text", function() {
+        var interp = d3.interpolateRound(0, score);
+        var self = this;
+        return function(t) { self.textContent = interp(t); };
+      });
+    g.append("text").attr("text-anchor", "middle").attr("dy", size * 0.15 + "px")
+      .attr("fill", "#94a3b8").attr("font-size", "12px").text("/ 100");
+  }, [score, size]);
+
+  return e("svg", { ref: ref });
+}
+
+function CategoryBar({ label, score, max, icon }) {
+  const pct = (score / max) * 100;
+  const color = pct >= 75 ? "#10b981" : pct >= 50 ? "#f59e0b" : pct >= 25 ? "#f97316" : "#ef4444";
+  return e("div", { style: { marginBottom: 14 } },
+    e("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 5, fontSize: 13, color: "#cbd5e1" } },
+      e("span", null, icon + " " + label),
+      e("span", { style: { fontWeight: 600, color } }, score + " / " + max)
+    ),
+    e("div", { style: { height: 8, borderRadius: 4, background: "#1e293b", overflow: "hidden" } },
+      e("div", { style: { height: "100%", width: pct + "%", background: color, borderRadius: 4, transition: "width 1s ease" } })
+    )
+  );
+}
+
+function Finding({ type, msg }) {
+  const s = {
+    warning: { bg: "rgba(239,68,68,0.12)", border: "#ef4444", color: "#fca5a5", icon: "\u26A0" },
+    info: { bg: "rgba(59,130,246,0.12)", border: "#3b82f6", color: "#93c5fd", icon: "\u2139" },
+    good: { bg: "rgba(16,185,129,0.12)", border: "#10b981", color: "#6ee7b7", icon: "\u2713" }
+  }[type] || { bg: "rgba(59,130,246,0.12)", border: "#3b82f6", color: "#93c5fd", icon: "\u2139" };
+  return e("div", {
+    style: { display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px",
+      borderRadius: 6, fontSize: 12, background: s.bg, border: "1px solid " + s.border + "30",
+      color: s.color, margin: "2px 4px 2px 0" }
+  }, e("span", null, s.icon), " " + msg);
+}
+
+function FileCard({ result, defaultOpen }) {
+  const [open, setOpen] = useState(defaultOpen || false);
+  const sc = result.totalScore;
+  const color = sc >= 75 ? "#10b981" : sc >= 50 ? "#f59e0b" : sc >= 25 ? "#f97316" : "#ef4444";
+  const icons = ["\u2726", "\u26A1", "\uD83E\uDDE0"];
+  return e("div", { style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 10, marginBottom: 10, overflow: "hidden", animation: "fadeIn .3s ease" } },
+    e("div", {
+      onClick: function() { setOpen(!open); },
+      style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", userSelect: "none" }
+    },
+      e("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+        e("span", { style: { color: "#64748b", fontSize: 11, transform: open ? "rotate(90deg)" : "none", transition: "transform .2s", display: "inline-block" } }, "\u25B6"),
+        e("span", { style: { fontFamily: "monospace", fontSize: 13, color: "#e2e8f0" } }, result.filename),
+        e("span", { style: { fontSize: 11, color: "#64748b" } }, result.lineCount + " lines")
+      ),
+      e("span", { style: { fontWeight: 700, fontSize: 15, color } }, sc)
+    ),
+    open ? e("div", { style: { padding: "0 16px 14px", borderTop: "1px solid #1e293b" } },
+      result.categories.map(function(cat, i) {
+        return e("div", { key: i, style: { marginTop: 12 } },
+          e(CategoryBar, { label: cat.category, score: cat.score, max: cat.maxScore, icon: icons[i] }),
+          e("div", { style: { display: "flex", flexWrap: "wrap", marginTop: 4 } },
+            cat.findings.length > 0
+              ? cat.findings.map(function(f, j) { return e(Finding, { key: j, type: f.type, msg: f.msg }); })
+              : e("span", { style: { fontSize: 12, color: "#475569" } }, "No notable findings")
+          )
+        );
+      })
+    ) : null
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const [username, setUsername] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [error, setError] = useState("");
+  const [results, setResults] = useState(null);
+  const [history, setHistory] = useState([]);
+
+  var grade = function(s) { return s >= 90 ? "A+" : s >= 80 ? "A" : s >= 70 ? "B+" : s >= 60 ? "B" : s >= 50 ? "C" : s >= 40 ? "D" : "F"; };
+
+  var analyze = useCallback(async function() {
+    var user = username.trim();
+    if (!user) return;
+    setLoading(true); setError(""); setResults(null);
+    setProgress("Fetching profile for @" + user + "...");
+
+    try {
+      var profile = await fetchJSON(GITHUB_API + "/users/" + user);
+      setProgress("Fetching repositories...");
+      var repos = await fetchJSON(GITHUB_API + "/users/" + user + "/repos?sort=updated&per_page=30");
+      repos = repos.filter(function(r) { return !r.fork; })
+        .sort(function(a, b) { return (b.stargazers_count + b.size) - (a.stargazers_count + a.size); })
+        .slice(0, MAX_REPOS);
+
+      if (repos.length === 0) { setError("No public non-fork repositories found."); setLoading(false); return; }
+
+      var allFiles = [], repoSums = [];
+      for (var ri = 0; ri < repos.length; ri++) {
+        var repo = repos[ri];
+        setProgress("Scanning " + repo.name + " (" + (ri + 1) + "/" + repos.length + ")...");
+        var files = await getRepoFiles(user, repo.name);
+        var repoResults = [];
+        for (var fi = 0; fi < files.length; fi++) {
+          var content = await fetchFileContent(files[fi].url);
+          if (content && content.length > 20) {
+            var result = analyzeFile(content, files[fi].name);
+            repoResults.push(result);
+            allFiles.push(Object.assign({}, result, { repo: repo.name }));
+          }
+        }
+        if (repoResults.length > 0) {
+          var avg = Math.round(repoResults.reduce(function(s, r) { return s + r.totalScore; }, 0) / repoResults.length);
+          repoSums.push({ name: repo.name, score: avg, stars: repo.stargazers_count, files: repoResults.length, language: repo.language });
+        }
+      }
+
+      if (allFiles.length === 0) { setError("No analyzable source files found."); setLoading(false); return; }
+
+      var overall = Math.round(allFiles.reduce(function(s, r) { return s + r.totalScore; }, 0) / allFiles.length);
+      var catAvgs = [0, 1, 2].map(function(i) {
+        var scores = allFiles.map(function(r) { return r.categories[i].score; });
+        return Math.round(scores.reduce(function(a, b) { return a + b; }, 0) / scores.length);
+      });
+
+      var fc = { warning: 0, info: 0, good: 0 };
+      allFiles.forEach(function(r) { r.categories.forEach(function(c) { c.findings.forEach(function(f) { fc[f.type]++; }); }); });
+
+      var issueFreq = {};
+      allFiles.forEach(function(r) { r.categories.forEach(function(c) {
+        c.findings.filter(function(f) { return f.type !== "good"; }).forEach(function(f) { issueFreq[f.msg] = (issueFreq[f.msg] || 0) + 1; });
+      }); });
+      var topIssues = Object.entries(issueFreq).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
+
+      var res = {
+        profile: profile, overallScore: overall, catAvgs: catAvgs,
+        repoSummaries: repoSums.sort(function(a, b) { return b.score - a.score; }),
+        fileResults: allFiles.sort(function(a, b) { return a.totalScore - b.totalScore; }),
+        findingCounts: fc, topIssues: topIssues,
+        filesAnalyzed: allFiles.length, reposAnalyzed: repoSums.length
+      };
+      setResults(res);
+      setHistory(function(h) { return [{ user: user, score: overall, time: new Date() }].concat(h).slice(0, 10); });
+    } catch (err) { setError(err.message); }
+    setLoading(false);
+  }, [username]);
+
+  // ─── Render ───────────────────────────────────────────────────────────────────
+
+  return e("div", { style: { minHeight: "100vh" } },
+
+    // Header
+    e("div", { style: { borderBottom: "1px solid #1e293b", padding: "20px 0", background: "linear-gradient(180deg, #0f172a 0%, #020617 100%)" } },
+      e("div", { style: { maxWidth: 960, margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        e("div", null,
+          e("h1", { style: { fontSize: 24, fontWeight: 700, margin: 0, letterSpacing: "-0.5px" } },
+            e("span", { style: { color: "#6366f1", marginRight: 8 } }, "\u25C6"), "GitHub Code Analyzer"
+          ),
+          e("p", { style: { color: "#64748b", fontSize: 13, margin: "4px 0 0" } },
+            "Candidate assessment \u2014 Code Quality \u00B7 Runtime Performance \u00B7 Memory Management"
+          )
+        ),
+        e("div", { style: { display: "flex", gap: 16, color: "#475569", fontSize: 12 } },
+          e("span", null, "Max " + MAX_REPOS + " repos"),
+          e("span", null, "\u00B7"),
+          e("span", null, MAX_FILES_PER_REPO + " files/repo"),
+          e("span", null, "\u00B7"),
+          e("span", null, "No auth required")
+        )
+      )
+    ),
+
+    e("div", { style: { maxWidth: 960, margin: "0 auto", padding: "32px 24px" } },
+
+      // Search
+      e("div", { style: { display: "flex", gap: 10, marginBottom: 32 } },
+        e("div", { style: { flex: 1, position: "relative" } },
+          e("span", { style: { position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#475569", fontSize: 16, pointerEvents: "none" } }, "\uD83D\uDD0D"),
+          e("input", {
+            value: username,
+            onChange: function(ev) { setUsername(ev.target.value); },
+            onKeyDown: function(ev) { if (ev.key === "Enter" && !loading) analyze(); },
+            placeholder: "Enter GitHub username...",
+            style: { width: "100%", padding: "14px 16px 14px 40px", borderRadius: 12, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", fontSize: 15, outline: "none", transition: "all .2s" }
+          })
+        ),
+        e("button", {
+          onClick: analyze,
+          disabled: loading || !username.trim(),
+          style: { padding: "14px 32px", borderRadius: 12, border: "none", background: loading ? "#334155" : "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 15, fontWeight: 600, cursor: loading ? "wait" : "pointer", opacity: !username.trim() ? 0.5 : 1, whiteSpace: "nowrap" }
+        }, loading ? "Analyzing..." : "Analyze")
+      ),
+
+      // Recent searches
+      history.length > 0 && !results && !loading ? e("div", { style: { marginBottom: 32 } },
+        e("div", { style: { fontSize: 12, color: "#475569", marginBottom: 8 } }, "Recent searches"),
+        e("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          history.map(function(h, i) {
+            return e("button", {
+              key: i,
+              onClick: function() { setUsername(h.user); },
+              style: { padding: "6px 14px", borderRadius: 8, border: "1px solid #1e293b", background: "#0f172a", color: "#94a3b8", fontSize: 13, cursor: "pointer" }
+            }, "@" + h.user + " \u2014 " + h.score + "/100");
+          })
+        )
+      ) : null,
+
+      // Loading state
+      loading ? e("div", { style: { textAlign: "center", padding: 60 } },
+        e("div", { style: { width: 44, height: 44, border: "3px solid #1e293b", borderTop: "3px solid #6366f1", borderRadius: "50%", animation: "spin .8s linear infinite", margin: "0 auto 20px" } }),
+        e("p", { style: { color: "#94a3b8", fontSize: 15, fontWeight: 500 } }, progress),
+        e("p", { style: { color: "#475569", fontSize: 12, marginTop: 6 } }, "This may take a minute for large accounts")
+      ) : null,
+
+      // Error
+      error ? e("div", { style: { padding: "16px 20px", borderRadius: 12, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#fca5a5", fontSize: 14, animation: "fadeIn .3s ease" } },
+        "\u26A0 " + error
+      ) : null,
+
+      // ─── Results ────────────────────────────────────────────────────────────────
+      results ? e("div", { style: { animation: "fadeIn .5s ease" } },
+
+        // Profile + Score hero
+        e("div", { style: { display: "flex", gap: 32, alignItems: "center", background: "linear-gradient(135deg, #0f172a, #1e1b4b20)", border: "1px solid #1e293b", borderRadius: 16, padding: 32, marginBottom: 24 } },
+          e("div", { style: { textAlign: "center", minWidth: 100 } },
+            e("img", { src: results.profile.avatar_url, style: { width: 80, height: 80, borderRadius: "50%", border: "3px solid #334155" } }),
+            e("div", { style: { marginTop: 10 } },
+              e("div", { style: { fontWeight: 700, fontSize: 17 } }, results.profile.name || results.profile.login),
+              e("a", { href: "https://github.com/" + results.profile.login, target: "_blank", style: { color: "#6366f1", fontSize: 13, textDecoration: "none" } }, "@" + results.profile.login)
+            ),
+            results.profile.bio ? e("div", { style: { fontSize: 12, color: "#64748b", marginTop: 6, maxWidth: 140 } }, results.profile.bio.slice(0, 80)) : null
+          ),
+          e("div", { style: { flex: 1 } },
+            e("div", { style: { display: "flex", alignItems: "center", gap: 24 } },
+              e(ScoreGauge, { score: results.overallScore, size: 170 }),
+              e("div", { style: { flex: 1 } },
+                e("div", { style: { fontSize: 14, color: "#94a3b8", marginBottom: 8 } },
+                  "Grade: ", e("span", { style: { fontSize: 28, fontWeight: 800, color: results.overallScore >= 70 ? "#10b981" : results.overallScore >= 50 ? "#f59e0b" : "#ef4444", marginLeft: 4 } }, grade(results.overallScore))
+                ),
+                e(CategoryBar, { label: "Code Quality", score: results.catAvgs[0], max: 40, icon: "\u2726" }),
+                e(CategoryBar, { label: "Runtime Performance", score: results.catAvgs[1], max: 30, icon: "\u26A1" }),
+                e(CategoryBar, { label: "Memory Management", score: results.catAvgs[2], max: 30, icon: "\uD83E\uDDE0" })
+              )
+            )
+          )
+        ),
+
+        // Stats grid
+        e("div", { style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 } },
+          [
+            { label: "Repos Analyzed", value: results.reposAnalyzed, color: "#6366f1" },
+            { label: "Files Analyzed", value: results.filesAnalyzed, color: "#8b5cf6" },
+            { label: "Issues Found", value: results.findingCounts.warning + results.findingCounts.info, color: "#f59e0b" },
+            { label: "Good Patterns", value: results.findingCounts.good, color: "#10b981" }
+          ].map(function(s, i) {
+            return e("div", { key: i, style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 12, padding: 18, textAlign: "center", animation: "fadeIn .4s ease " + (i * 0.1) + "s both" } },
+              e("div", { style: { fontSize: 28, fontWeight: 800, color: s.color } }, s.value),
+              e("div", { style: { fontSize: 12, color: "#64748b", marginTop: 3 } }, s.label)
+            );
+          })
+        ),
+
+        // Two-column layout: Top Issues + Repos
+        e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 } },
+
+          // Top Issues
+          results.topIssues.length > 0 ? e("div", { style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, padding: 20 } },
+            e("h3", { style: { fontSize: 15, fontWeight: 600, margin: "0 0 14px", color: "#f1f5f9" } }, "\u26A0 Top Issues"),
+            results.topIssues.map(function(issue, i) {
+              return e("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: i < results.topIssues.length - 1 ? "1px solid #1e293b" : "none", animation: "slideIn .3s ease " + (i * 0.05) + "s both" } },
+                e("span", { style: { fontSize: 13, color: "#cbd5e1", flex: 1, marginRight: 10 } }, issue[0]),
+                e("span", { style: { fontSize: 12, color: "#94a3b8", background: "#1e293b", padding: "2px 10px", borderRadius: 10, fontWeight: 700, whiteSpace: "nowrap" } }, issue[1] + "x")
+              );
+            })
+          ) : null,
+
+          // Repo Scores
+          e("div", { style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, padding: 20 } },
+            e("h3", { style: { fontSize: 15, fontWeight: 600, margin: "0 0 14px", color: "#f1f5f9" } }, "\uD83D\uDCC1 Repository Scores"),
+            results.repoSummaries.map(function(repo, i) {
+              var c = repo.score >= 75 ? "#10b981" : repo.score >= 50 ? "#f59e0b" : repo.score >= 25 ? "#f97316" : "#ef4444";
+              return e("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: i < results.repoSummaries.length - 1 ? "1px solid #1e293b" : "none", animation: "slideIn .3s ease " + (i * 0.05) + "s both" } },
+                e("div", null,
+                  e("span", { style: { fontWeight: 600, fontSize: 14 } }, repo.name),
+                  e("span", { style: { fontSize: 11, color: "#64748b", marginLeft: 8 } }, repo.language || ""),
+                  e("span", { style: { fontSize: 11, color: "#64748b", marginLeft: 8 } }, "\u2605 " + repo.stars)
+                ),
+                e("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                  e("div", { style: { width: 80, height: 6, borderRadius: 3, background: "#1e293b", overflow: "hidden" } },
+                    e("div", { style: { height: "100%", width: repo.score + "%", background: c, borderRadius: 3, transition: "width 1s ease" } })
+                  ),
+                  e("span", { style: { fontWeight: 700, fontSize: 14, color: c, minWidth: 28, textAlign: "right" } }, repo.score)
+                )
+              );
+            })
+          )
+        ),
+
+        // File details
+        e("div", { style: { marginBottom: 24 } },
+          e("h3", { style: { fontSize: 15, fontWeight: 600, margin: "0 0 14px", color: "#f1f5f9" } },
+            "\uD83D\uDD0D File-Level Analysis ",
+            e("span", { style: { fontWeight: 400, color: "#64748b", fontSize: 13 } }, "(" + results.fileResults.length + " files, lowest scores first)")
+          ),
+          results.fileResults.map(function(r, i) {
+            return e(FileCard, { key: i, result: r, defaultOpen: i < 3 });
+          })
+        ),
+
+        // Footer
+        e("div", { style: { textAlign: "center", padding: 24, color: "#475569", fontSize: 12, borderTop: "1px solid #1e293b" } },
+          "Scores based on static heuristic analysis of public source code. ",
+          "Analyzes up to " + MAX_REPOS + " repos and " + MAX_FILES_PER_REPO + " files per repo.",
+          e("br"), "Results are indicative \u2014 not a substitute for manual code review."
+        )
+
+      ) : null,
+
+      // Empty state
+      !results && !loading && !error ? e("div", { style: { textAlign: "center", padding: "80px 20px" } },
+        e("div", { style: { fontSize: 64, marginBottom: 16 } }, "\u25C6"),
+        e("h2", { style: { fontSize: 20, fontWeight: 600, color: "#94a3b8", marginBottom: 8 } }, "Enter a GitHub username to begin"),
+        e("p", { style: { color: "#475569", fontSize: 14, maxWidth: 440, margin: "0 auto", lineHeight: 1.6 } },
+          "This tool fetches public repositories, analyzes source code across all languages, and produces a detailed score breakdown for code quality, runtime performance, and memory management."
+        ),
+        e("div", { style: { display: "flex", gap: 12, justifyContent: "center", marginTop: 24 } },
+          ["torvalds", "sindresorhus", "tj"].map(function(name) {
+            return e("button", {
+              key: name,
+              onClick: function() { setUsername(name); },
+              style: { padding: "8px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0f172a", color: "#6366f1", fontSize: 13, cursor: "pointer", fontWeight: 500 }
+            }, "Try @" + name);
+          })
+        )
+      ) : null
+    )
+  );
+}
+
+ReactDOM.render(e(App), document.getElementById("root"));
+</script>
+</body>
+</html>
