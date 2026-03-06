@@ -212,56 +212,74 @@ function analyzeFile(content, filename) {
 
 // ─── GitHub API ───────────────────────────────────────────────────────────────
 
-async function fetchJSON(url) {
-  const r = await fetch(url);
+// Uses the Git Trees API: returns the ENTIRE repo tree in ONE API call
+// instead of recursively calling /contents/ per directory (which burns rate limits)
+var apiCallsUsed = 0;
+var apiCallsRemaining = 60;
+
+async function trackedFetchJSON(url) {
+  apiCallsUsed++;
+  var r = await fetch(url);
+  // Track rate limit from response headers
+  var remaining = r.headers.get("X-RateLimit-Remaining");
+  if (remaining !== null) apiCallsRemaining = parseInt(remaining);
   if (!r.ok) {
-    if (r.status === 403) throw new Error("GitHub API rate limit reached (60 req/hr without token). Try again later.");
-    if (r.status === 404) throw new Error("User not found on GitHub.");
+    if (r.status === 403) throw new Error("GitHub API rate limit reached (" + apiCallsUsed + " calls used). Wait ~1 hour or use a smaller account.");
+    if (r.status === 404) throw new Error("Not found: " + url.split("api.github.com")[1]);
+    if (r.status === 409) return null; // Empty repo
     throw new Error("GitHub API error: " + r.status);
   }
   return r.json();
 }
 
-async function fetchFileContent(url) {
+async function getRepoFiles(owner, repo) {
+  var skip = new Set(["node_modules","vendor","dist","build","__pycache__","venv",".git","target","bin","obj","packages",".next",".nuxt","__tests__","test","tests","docs","doc",".github",".circleci"]);
   try {
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    const d = await r.json();
-    if (d.encoding === "base64" && d.content) {
-      // Use TextDecoder to properly handle UTF-8 content (atob breaks on non-ASCII)
-      var raw = d.content.replace(/\n/g, "");
+    // Single API call to get entire file tree
+    var data = await trackedFetchJSON(GITHUB_API + "/repos/" + owner + "/" + repo + "/git/trees/HEAD?recursive=1");
+    if (!data || !data.tree) return [];
+    var files = [];
+    for (var i = 0; i < data.tree.length; i++) {
+      if (files.length >= MAX_FILES_PER_REPO) break;
+      var item = data.tree[i];
+      if (item.type !== "blob") continue;
+      if (!canAnalyze(item.path)) continue;
+      if (item.size > MAX_FILE_SIZE || item.size < 10) continue;
+      // Skip files inside excluded directories
+      var parts = item.path.split("/");
+      var inSkipped = false;
+      for (var j = 0; j < parts.length - 1; j++) {
+        if (skip.has(parts[j]) || parts[j].startsWith(".")) { inSkipped = true; break; }
+      }
+      if (inSkipped) continue;
+      // Prefer source files over config/docs: prioritize by extension
+      files.push({ name: item.path, sha: item.sha, size: item.size, url: GITHUB_API + "/repos/" + owner + "/" + repo + "/git/blobs/" + item.sha });
+    }
+    // Sort: prefer .py, .js, .ts, .java, .go, .rs files over others; larger files first
+    var priorityExts = new Set(["py","js","ts","jsx","tsx","java","go","rs","c","cpp","rb","swift","kt"]);
+    files.sort(function(a, b) {
+      var aPri = priorityExts.has(ext(a.name)) ? 0 : 1;
+      var bPri = priorityExts.has(ext(b.name)) ? 0 : 1;
+      if (aPri !== bPri) return aPri - bPri;
+      return b.size - a.size; // larger files first (more code to analyze)
+    });
+    return files.slice(0, MAX_FILES_PER_REPO);
+  } catch(err) { console.warn("getRepoFiles error for " + repo + ":", err); return []; }
+}
+
+// Fetch file content from blob API
+async function fetchBlobContent(url) {
+  try {
+    var data = await trackedFetchJSON(url);
+    if (!data) return null;
+    if (data.encoding === "base64" && data.content) {
+      var raw = data.content.replace(/\n/g, "");
       var bytes = Uint8Array.from(atob(raw), function(c) { return c.charCodeAt(0); });
       return new TextDecoder("utf-8").decode(bytes);
     }
-    // Some files come back with direct content (no encoding)
-    if (d.content) return d.content;
-    // Fallback: try download_url for raw content
-    if (d.download_url) {
-      var raw2 = await fetch(d.download_url);
-      if (raw2.ok) return await raw2.text();
-    }
+    if (data.content) return data.content;
     return null;
-  } catch(err) { console.warn("fetchFileContent error:", url, err); return null; }
-}
-
-async function getRepoFiles(owner, repo, path, depth) {
-  path = path || ""; depth = depth || 0;
-  if (depth > 3) return [];
-  const skip = new Set(["node_modules","vendor","dist","build","__pycache__","venv",".git","target","bin","obj","packages",".next",".nuxt"]);
-  try {
-    const items = await fetchJSON(GITHUB_API + "/repos/" + owner + "/" + repo + "/contents/" + path);
-    if (!Array.isArray(items)) return [];
-    let files = [];
-    for (const item of items) {
-      if (files.length >= MAX_FILES_PER_REPO) break;
-      if (item.type === "file" && canAnalyze(item.name) && item.size < MAX_FILE_SIZE && item.size > 10) {
-        files.push({ name: item.path, url: item.url, size: item.size });
-      } else if (item.type === "dir" && !item.name.startsWith(".") && !skip.has(item.name)) {
-        files = files.concat(await getRepoFiles(owner, repo, item.path, depth + 1));
-      }
-    }
-    return files.slice(0, MAX_FILES_PER_REPO);
-  } catch { return []; }
+  } catch(err) { console.warn("fetchBlobContent error:", err); return null; }
 }
 
 // ─── Components ───────────────────────────────────────────────────────────────
@@ -388,9 +406,10 @@ function App() {
     setProgress("Fetching profile for @" + user + "...");
 
     try {
-      var profile = await fetchJSON(GITHUB_API + "/users/" + user);
+      apiCallsUsed = 0; apiCallsRemaining = 60;
+      var profile = await trackedFetchJSON(GITHUB_API + "/users/" + user);
       setProgress("Fetching repositories...");
-      var repos = await fetchJSON(GITHUB_API + "/users/" + user + "/repos?sort=updated&per_page=30");
+      var repos = await trackedFetchJSON(GITHUB_API + "/users/" + user + "/repos?sort=updated&per_page=30");
       repos = repos.filter(function(r) { return includeForks || !r.fork; })
         .sort(function(a, b) { return (b.stargazers_count + b.size) - (a.stargazers_count + a.size); })
         .slice(0, MAX_REPOS);
@@ -400,11 +419,11 @@ function App() {
       var allFiles = [], repoSums = [];
       for (var ri = 0; ri < repos.length; ri++) {
         var repo = repos[ri];
-        setProgress("Scanning " + repo.name + " (" + (ri + 1) + "/" + repos.length + ")...");
+        setProgress("Scanning " + repo.name + " (" + (ri + 1) + "/" + repos.length + ") \u2014 " + apiCallsRemaining + " API calls remaining");
         var files = await getRepoFiles(user, repo.name);
         var repoResults = [];
         for (var fi = 0; fi < files.length; fi++) {
-          var rawContent = await fetchFileContent(files[fi].url);
+          var rawContent = await fetchBlobContent(files[fi].url);
           if (!rawContent) continue;
           // Handle Jupyter notebooks: extract code cells
           var content = rawContent;
