@@ -3,24 +3,45 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>GitHub Code Analyzer</title>
+<title>GitHub Code Analyzer | Built by Axiom Group</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { -webkit-font-smoothing: antialiased; }
-  body { background: #020617; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif; }
+  html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
+  body { background: #020617; color: #e2e8f0; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif; }
+  code, .mono { font-family: 'JetBrains Mono', monospace; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
   @keyframes countUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-  input:focus { border-color: #6366f1 !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
-  button:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
-  button { transition: all .15s ease; }
+  @keyframes glow { 0%, 100% { box-shadow: 0 0 20px rgba(99,102,241,0.15); } 50% { box-shadow: 0 0 40px rgba(99,102,241,0.3); } }
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  @keyframes confetti1 { 0% { transform: translateY(0) rotate(0deg); opacity: 1; } 100% { transform: translateY(-60px) rotate(180deg); opacity: 0; } }
+  @keyframes confetti2 { 0% { transform: translateY(0) rotate(0deg); opacity: 1; } 100% { transform: translateY(-80px) rotate(-200deg); opacity: 0; } }
+  @keyframes popIn { 0% { transform: scale(0); opacity: 0; } 60% { transform: scale(1.15); } 100% { transform: scale(1); opacity: 1; } }
+  @keyframes borderGlow { 0%, 100% { border-color: #6366f1; } 50% { border-color: #a78bfa; } }
+  @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+  @keyframes particle { 0% { transform: translate(0, 0) scale(1); opacity: 0.6; } 100% { transform: translate(var(--dx), var(--dy)) scale(0); opacity: 0; } }
+  .particle-field { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+  .particle-field span { position: absolute; width: 3px; height: 3px; background: #6366f1; border-radius: 50%; animation: particle 3s ease-out infinite; }
+  input:focus { border-color: #6366f1 !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.2), 0 0 20px rgba(99,102,241,0.1); }
+  button:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-2px); box-shadow: 0 4px 15px rgba(99,102,241,0.2); }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button { transition: all .2s cubic-bezier(0.4, 0, 0.2, 1); }
+  .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; transition: border-color .3s, box-shadow .3s; }
+  .card:hover { border-color: #334155; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  .score-pop { animation: popIn .5s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+  .gradient-text { background: linear-gradient(135deg, #6366f1, #a78bfa, #6366f1); background-size: 200% 200%; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: gradientShift 3s ease infinite; }
+  .shimmer-bar { background: linear-gradient(90deg, transparent, rgba(99,102,241,0.1), transparent); background-size: 200% 100%; animation: shimmer 2s ease infinite; }
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: #0f172a; }
   ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
 </style>
 </head>
 <body>
@@ -300,6 +321,10 @@ function FileCard(props) {
 function grade(s) { return s >= 90 ? "A+" : s >= 80 ? "A" : s >= 70 ? "B+" : s >= 60 ? "B" : s >= 50 ? "C" : s >= 40 ? "D" : "F"; }
 function scoreColor(s) { return s >= 75 ? "#10b981" : s >= 50 ? "#f59e0b" : s >= 25 ? "#f97316" : "#ef4444"; }
 var medals = ["\uD83E\uDD47", "\uD83E\uDD48", "\uD83E\uDD49"];
+var AXIOM_LOGO = "data:image/png;base64,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";
+
+// Fun emoji reactions based on score
+function scoreReaction(s) { return s >= 90 ? "\uD83D\uDD25" : s >= 80 ? "\uD83D\uDE80" : s >= 70 ? "\u2B50" : s >= 60 ? "\uD83D\uDCAA" : s >= 50 ? "\uD83E\uDD14" : s >= 40 ? "\uD83D\uDE2C" : s >= 25 ? "\uD83D\uDE31" : "\uD83D\uDCA9"; }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
@@ -476,45 +501,53 @@ function App() {
   return e("div", { style: { minHeight: "100vh" } },
 
     // Header
-    e("div", { style: { borderBottom: "1px solid #1e293b", padding: "20px 0", background: "linear-gradient(180deg, #0f172a 0%, #020617 100%)" } },
-      e("div", { style: { maxWidth: 1000, margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" } },
-        e("div", null,
-          e("h1", { style: { fontSize: 24, fontWeight: 700, margin: 0 } },
-            e("span", { style: { color: "#6366f1", marginRight: 8 } }, "\u25C6"), "GitHub Code Analyzer"),
-          e("p", { style: { color: "#64748b", fontSize: 13, margin: "4px 0 0" } },
-            "Code Quality \u00B7 Runtime Performance \u00B7 Memory Management")),
-        e("div", { style: { display: "flex", gap: 16, color: "#475569", fontSize: 12 } },
-          e("span", null, apiCallsRemaining + " API calls left"))
+    e("div", { style: { borderBottom: "1px solid #1e293b", padding: "20px 0", background: "linear-gradient(180deg, #0f172a 0%, #020617 100%)", position: "relative", overflow: "hidden" } },
+      // Particle field in header
+      e("div", { className: "particle-field" },
+        Array.from({ length: 12 }, function(_, i) {
+          return e("span", { key: i, style: { left: (Math.random() * 100) + "%", top: (Math.random() * 100) + "%", "--dx": (Math.random() * 60 - 30) + "px", "--dy": (Math.random() * -60 - 20) + "px", animationDelay: (Math.random() * 3) + "s", opacity: 0.3 } });
+        })
+      ),
+      e("div", { style: { maxWidth: 1000, margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative", zIndex: 1 } },
+        e("div", { style: { display: "flex", alignItems: "center", gap: 14 } },
+          e("img", { src: "data:image/png;base64," + AXIOM_LOGO, style: { width: 42, height: 42, animation: "float 4s ease-in-out infinite" } }),
+          e("div", null,
+            e("h1", { className: "gradient-text", style: { fontSize: 26, fontWeight: 700, margin: 0, letterSpacing: "-0.5px" } }, "GitHub Code Analyzer"),
+            e("p", { style: { color: "#64748b", fontSize: 12, margin: "4px 0 0", letterSpacing: "0.5px" } },
+              "\u2726 Code Quality  \u00B7  \u26A1 Performance  \u00B7  \uD83E\uDDE0 Memory"))),
+        e("div", { style: { display: "flex", alignItems: "center", gap: 14 } },
+          e("div", { style: { padding: "6px 14px", borderRadius: 20, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.15)", fontSize: 12, color: "#a78bfa", fontWeight: 500, animation: apiCallsRemaining < 20 ? "borderGlow 1.5s ease infinite" : "none" } },
+            "\u26A1 " + apiCallsRemaining + " calls left"))
       )
     ),
 
     e("div", { style: { maxWidth: 1000, margin: "0 auto", padding: "32px 24px" } },
 
       // Mode toggle
-      e("div", { style: { display: "flex", gap: 4, marginBottom: 24, background: "#0f172a", borderRadius: 10, padding: 4, width: "fit-content" } },
+      e("div", { style: { display: "flex", gap: 4, marginBottom: 24, background: "#0f172a", borderRadius: 12, padding: 4, width: "fit-content", border: "1px solid #1e293b" } },
         ["user", "project"].map(function(m) {
           var active = mode === m;
           return e("button", { key: m, onClick: function() { setS("mode", m); setS("results", null); setS("leaderboard", null); setS("error", ""); },
-            style: { padding: "10px 24px", borderRadius: 8, border: "none", background: active ? "#6366f1" : "transparent", color: active ? "#fff" : "#64748b", fontSize: 14, fontWeight: active ? 600 : 400, cursor: "pointer" }
+            style: { padding: "10px 24px", borderRadius: 8, border: "none", background: active ? "linear-gradient(135deg, #6366f1, #8b5cf6)" : "transparent", color: active ? "#fff" : "#64748b", fontSize: 14, fontWeight: active ? 600 : 400, cursor: "pointer", boxShadow: active ? "0 2px 12px rgba(99,102,241,0.3)" : "none", transition: "all .3s ease" }
           }, m === "user" ? "\uD83D\uDC64 User Analysis" : "\uD83C\uDFC6 Project Leaderboard");
         })
       ),
 
       // Search row
-      e("div", { style: { display: "flex", gap: 10, marginBottom: 20 } },
+      e("div", { className: "card", style: { display: "flex", gap: 10, marginBottom: 20, padding: 8, animation: "glow 4s ease infinite" } },
         e("div", { style: { flex: 1, position: "relative" } },
-          e("span", { style: { position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#475569", fontSize: 14, pointerEvents: "none" } },
+          e("span", { style: { position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#475569", fontSize: 16, pointerEvents: "none" } },
             mode === "user" ? "\uD83D\uDD0D" : "\uD83D\uDCC1"),
           e("input", {
             value: getS("input"),
             onChange: function(ev) { setS("input", ev.target.value); },
             onKeyDown: function(ev) { if (ev.key === "Enter" && !loading) doAnalyze(); },
             placeholder: mode === "user" ? "Enter GitHub username..." : "Enter repo (e.g. facebook/react)...",
-            style: { width: "100%", padding: "14px 16px 14px 40px", borderRadius: 12, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", fontSize: 15, outline: "none" }
+            style: { width: "100%", padding: "14px 16px 14px 42px", borderRadius: 10, border: "1px solid transparent", background: "transparent", color: "#e2e8f0", fontSize: 15, outline: "none" }
           })),
         e("button", { onClick: doAnalyze, disabled: loading || !getS("input").trim(),
-          style: { padding: "14px 28px", borderRadius: 12, border: "none", background: loading ? "#334155" : "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 15, fontWeight: 600, cursor: loading ? "wait" : "pointer", opacity: !getS("input").trim() ? 0.5 : 1, whiteSpace: "nowrap" }
-        }, loading ? "Analyzing..." : mode === "user" ? "Analyze" : "Build Leaderboard")
+          style: { padding: "14px 32px", borderRadius: 10, border: "none", background: loading ? "#334155" : "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "#fff", fontSize: 15, fontWeight: 600, cursor: loading ? "wait" : "pointer", opacity: !getS("input").trim() ? 0.5 : 1, whiteSpace: "nowrap", boxShadow: loading ? "none" : "0 4px 20px rgba(99,102,241,0.3)" }
+        }, loading ? "\u23F3 Analyzing..." : mode === "user" ? "\u26A1 Analyze" : "\uD83C\uDFC6 Build Leaderboard")
       ),
 
       // Options
@@ -533,10 +566,14 @@ function App() {
       ),
 
       // Loading
-      loading ? e("div", { style: { textAlign: "center", padding: 60 } },
-        e("div", { style: { width: 44, height: 44, border: "3px solid #1e293b", borderTop: "3px solid #6366f1", borderRadius: "50%", animation: "spin .8s linear infinite", margin: "0 auto 20px" } }),
-        e("p", { style: { color: "#94a3b8", fontSize: 15, fontWeight: 500 } }, getS("progress")),
-        e("p", { style: { color: "#475569", fontSize: 12, marginTop: 6 } }, "This may take a minute for large projects")
+      loading ? e("div", { style: { textAlign: "center", padding: 60, position: "relative" } },
+        e("div", { style: { position: "relative", width: 80, height: 80, margin: "0 auto 24px" } },
+          e("div", { style: { position: "absolute", inset: 0, border: "3px solid #1e293b", borderTop: "3px solid #6366f1", borderRadius: "50%", animation: "spin .8s linear infinite" } }),
+          e("div", { style: { position: "absolute", inset: 8, border: "3px solid #1e293b", borderBottom: "3px solid #a78bfa", borderRadius: "50%", animation: "spin 1.2s linear infinite reverse" } }),
+          e("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, animation: "float 2s ease-in-out infinite" } }, "\u2726")),
+        e("p", { className: "gradient-text", style: { fontSize: 16, fontWeight: 600, marginBottom: 6 } }, getS("progress")),
+        e("div", { className: "shimmer-bar", style: { height: 3, borderRadius: 2, maxWidth: 300, margin: "12px auto" } }),
+        e("p", { style: { color: "#475569", fontSize: 12, marginTop: 8 } }, "Crunching the code... this may take a moment \uD83D\uDE80")
       ) : null,
 
       // Error
@@ -544,9 +581,14 @@ function App() {
 
       // ─── USER RESULTS ─────────────────────────────────────────────────────────
       results ? e("div", { style: { animation: "fadeIn .5s ease" } },
-        e("div", { style: { display: "flex", gap: 32, alignItems: "center", background: "linear-gradient(135deg, #0f172a, #1e1b4b20)", border: "1px solid #1e293b", borderRadius: 16, padding: 28, marginBottom: 24 } },
+        e("div", { className: "card", style: { display: "flex", gap: 32, alignItems: "center", background: "linear-gradient(135deg, #0f172a, #1e1b4b15, #0f172a)", padding: 28, marginBottom: 24, position: "relative", overflow: "hidden" } },
+          // Score reaction confetti for high scores
+          results.overallScore >= 80 ? e("div", { style: { position: "absolute", top: 10, right: 20, fontSize: 24, animation: "confetti1 2s ease-out infinite" } }, "\u2728") : null,
+          results.overallScore >= 80 ? e("div", { style: { position: "absolute", top: 14, right: 60, fontSize: 18, animation: "confetti2 2.5s ease-out infinite 0.3s" } }, "\uD83C\uDF1F") : null,
           e("div", { style: { textAlign: "center", minWidth: 90 } },
-            e("img", { src: results.profile.avatar_url, style: { width: 72, height: 72, borderRadius: "50%", border: "3px solid #334155" } }),
+            e("div", { style: { position: "relative", display: "inline-block" } },
+              e("img", { src: results.profile.avatar_url, style: { width: 76, height: 76, borderRadius: "50%", border: "3px solid " + scoreColor(results.overallScore), boxShadow: "0 0 20px " + scoreColor(results.overallScore) + "33" } }),
+              e("div", { className: "score-pop", style: { position: "absolute", bottom: -4, right: -4, fontSize: 20, background: "#0f172a", borderRadius: "50%", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center" } }, scoreReaction(results.overallScore))),
             e("div", { style: { marginTop: 8 } },
               e("div", { style: { fontWeight: 700, fontSize: 16 } }, results.profile.name || results.profile.login),
               e("a", { href: "https://github.com/" + results.profile.login, target: "_blank", style: { color: "#6366f1", fontSize: 13, textDecoration: "none" } }, "@" + results.profile.login))),
@@ -555,16 +597,18 @@ function App() {
               e(ScoreGauge, { score: results.overallScore, size: 160 }),
               e("div", { style: { flex: 1 } },
                 e("div", { style: { fontSize: 14, color: "#94a3b8", marginBottom: 6 } }, "Grade: ",
-                  e("span", { style: { fontSize: 26, fontWeight: 800, color: scoreColor(results.overallScore), marginLeft: 4 } }, grade(results.overallScore))),
+                  e("span", { className: "score-pop", style: { fontSize: 28, fontWeight: 800, color: scoreColor(results.overallScore), marginLeft: 4 } }, grade(results.overallScore)),
+                  e("span", { style: { marginLeft: 8, fontSize: 20 } }, scoreReaction(results.overallScore))),
                 e(CatBar, { label: "Code Quality", score: results.catAvgs[0], max: 40, icon: "\u2726" }),
                 e(CatBar, { label: "Performance", score: results.catAvgs[1], max: 30, icon: "\u26A1" }),
                 e(CatBar, { label: "Memory", score: results.catAvgs[2], max: 30, icon: "\uD83E\uDDE0" }))))),
         // Stats
         e("div", { style: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 } },
-          [{ l: "Repos", v: results.reposAnalyzed, c: "#6366f1" },{ l: "Files", v: results.filesAnalyzed, c: "#8b5cf6" },
-           { l: "Issues", v: results.findingCounts.warning + results.findingCounts.info, c: "#f59e0b" },{ l: "Good Patterns", v: results.findingCounts.good, c: "#10b981" }]
-          .map(function(s,i) { return e("div", { key: i, style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 12, padding: 16, textAlign: "center" } },
-            e("div", { style: { fontSize: 26, fontWeight: 800, color: s.c } }, s.v), e("div", { style: { fontSize: 12, color: "#64748b", marginTop: 2 } }, s.l)); })),
+          [{ l: "Repos", v: results.reposAnalyzed, c: "#6366f1", icon: "\uD83D\uDCE6" },{ l: "Files", v: results.filesAnalyzed, c: "#8b5cf6", icon: "\uD83D\uDCC4" },
+           { l: "Issues", v: results.findingCounts.warning + results.findingCounts.info, c: "#f59e0b", icon: "\u26A0\uFE0F" },{ l: "Good Patterns", v: results.findingCounts.good, c: "#10b981", icon: "\u2705" }]
+          .map(function(s,i) { return e("div", { key: i, className: "card", style: { padding: 16, textAlign: "center", animation: "popIn .4s cubic-bezier(0.34,1.56,0.64,1) " + (i * 0.08) + "s both" } },
+            e("div", { style: { fontSize: 12, marginBottom: 4 } }, s.icon),
+            e("div", { style: { fontSize: 28, fontWeight: 800, color: s.c } }, s.v), e("div", { style: { fontSize: 12, color: "#64748b", marginTop: 2, fontWeight: 500 } }, s.l)); })),
         // Files
         e("div", { style: { marginBottom: 24 } },
           e("h3", { style: { fontSize: 15, fontWeight: 600, margin: "0 0 12px", color: "#f1f5f9" } }, "File Analysis (" + results.fileResults.length + " files)"),
@@ -575,21 +619,29 @@ function App() {
       lb ? e("div", { style: { animation: "fadeIn .5s ease" } },
 
         // Project header
-        e("div", { style: { background: "linear-gradient(135deg, #0f172a, #1e1b4b20)", border: "1px solid #1e293b", borderRadius: 16, padding: 28, marginBottom: 24, textAlign: "center" } },
-          e("h2", { style: { fontSize: 22, fontWeight: 700, marginBottom: 6 } }, lb.repoInfo.full_name),
-          e("p", { style: { color: "#64748b", fontSize: 13, marginBottom: 16 } }, lb.repoInfo.description || ""),
-          e("div", { style: { display: "flex", gap: 24, justifyContent: "center", flexWrap: "wrap" } },
-            [{ l: "Contributors Ranked", v: lb.devScores.length, c: "#6366f1" },
-             { l: "Files Analyzed", v: lb.totalFiles, c: "#8b5cf6" },
-             { l: "Avg Score", v: lb.avgScore + "/100", c: "#f59e0b" },
-             { l: "Top Score", v: lb.topScore + "/100", c: "#10b981" }]
-            .map(function(s,i) { return e("div", { key: i, style: { textAlign: "center" } },
-              e("div", { style: { fontSize: 24, fontWeight: 800, color: s.c } }, s.v),
-              e("div", { style: { fontSize: 11, color: "#64748b", marginTop: 2 } }, s.l)); }))
+        e("div", { className: "card", style: { background: "linear-gradient(135deg, #0f172a, #1e1b4b15, #0f172a)", padding: 32, marginBottom: 24, textAlign: "center", position: "relative", overflow: "hidden" } },
+          e("div", { className: "particle-field" },
+            Array.from({ length: 8 }, function(_, i) {
+              return e("span", { key: i, style: { left: (Math.random() * 100) + "%", top: (Math.random() * 100) + "%", "--dx": (Math.random() * 40 - 20) + "px", "--dy": (Math.random() * -40 - 10) + "px", animationDelay: (Math.random() * 3) + "s", opacity: 0.2 } });
+            })
+          ),
+          e("div", { style: { position: "relative", zIndex: 1 } },
+            e("div", { style: { fontSize: 32, marginBottom: 8 } }, "\uD83C\uDFC6"),
+            e("h2", { className: "gradient-text", style: { fontSize: 24, fontWeight: 700, marginBottom: 6, display: "inline-block" } }, lb.repoInfo.full_name),
+            e("p", { style: { color: "#64748b", fontSize: 13, marginBottom: 20 } }, lb.repoInfo.description || ""),
+            e("div", { style: { display: "flex", gap: 24, justifyContent: "center", flexWrap: "wrap" } },
+              [{ l: "Contributors Ranked", v: lb.devScores.length, c: "#6366f1", icon: "\uD83D\uDC65" },
+               { l: "Files Analyzed", v: lb.totalFiles, c: "#8b5cf6", icon: "\uD83D\uDCC4" },
+               { l: "Avg Score", v: lb.avgScore + "/100", c: "#f59e0b", icon: "\uD83D\uDCCA" },
+               { l: "Top Score", v: lb.topScore + "/100", c: "#10b981", icon: "\uD83D\uDE80" }]
+              .map(function(s,i) { return e("div", { key: i, style: { textAlign: "center", animation: "popIn .4s cubic-bezier(0.34,1.56,0.64,1) " + (i * 0.1) + "s both" } },
+                e("div", { style: { fontSize: 14, marginBottom: 2 } }, s.icon),
+                e("div", { style: { fontSize: 26, fontWeight: 800, color: s.c } }, s.v),
+                e("div", { style: { fontSize: 11, color: "#64748b", marginTop: 2 } }, s.l)); })))
         ),
 
         // Leaderboard table
-        e("div", { style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, overflow: "hidden", marginBottom: 24 } },
+        e("div", { className: "card", style: { overflow: "hidden", marginBottom: 24 } },
           // Header row
           e("div", { style: { display: "grid", gridTemplateColumns: "50px 1fr 80px 80px 80px 70px", gap: 8, padding: "14px 20px", borderBottom: "1px solid #1e293b", fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" } },
             e("span", null, "Rank"), e("span", null, "Developer"), e("span", { style: { textAlign: "center" } }, "Quality"), e("span", { style: { textAlign: "center" } }, "Perf"), e("span", { style: { textAlign: "center" } }, "Memory"), e("span", { style: { textAlign: "right" } }, "Score")),
@@ -623,6 +675,7 @@ function App() {
                 // Total score
                 e("div", { style: { textAlign: "right" } },
                   e("span", { style: { fontSize: 20, fontWeight: 800, color: color } }, dev.score),
+                  e("span", { style: { fontSize: 14, marginLeft: 4 } }, scoreReaction(dev.score)),
                   e("div", { style: { fontSize: 11, color: "#64748b" } }, dev.grade))
               ),
               // Expanded detail
@@ -647,7 +700,7 @@ function App() {
         // Score distribution
         e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 } },
           // Distribution chart
-          e("div", { style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, padding: 20 } },
+          e("div", { className: "card", style: { padding: 20 } },
             e("h3", { style: { fontSize: 14, fontWeight: 600, margin: "0 0 14px", color: "#f1f5f9" } }, "Score Distribution"),
             lb.devScores.map(function(dev, i) {
               var barWidth = (dev.score / 100) * 100;
@@ -659,7 +712,7 @@ function App() {
             })
           ),
           // Quick comparison
-          e("div", { style: { background: "#0f172a", border: "1px solid #1e293b", borderRadius: 14, padding: 20 } },
+          e("div", { className: "card", style: { padding: 20 } },
             e("h3", { style: { fontSize: 14, fontWeight: 600, margin: "0 0 14px", color: "#f1f5f9" } }, "Category Comparison"),
             [{ label: "Code Quality", max: 40, idx: 0, icon: "\u2726" },
              { label: "Performance", max: 30, idx: 1, icon: "\u26A1" },
@@ -686,21 +739,46 @@ function App() {
       ) : null,
 
       // Empty state
-      !results && !lb && !loading && !error ? e("div", { style: { textAlign: "center", padding: "80px 20px" } },
-        e("div", { style: { fontSize: 64, marginBottom: 16 } }, mode === "user" ? "\u25C6" : "\uD83C\uDFC6"),
-        e("h2", { style: { fontSize: 20, fontWeight: 600, color: "#94a3b8", marginBottom: 8 } },
-          mode === "user" ? "Enter a GitHub username to begin" : "Enter a repository to build a leaderboard"),
-        e("p", { style: { color: "#475569", fontSize: 14, maxWidth: 480, margin: "0 auto", lineHeight: 1.6 } },
-          mode === "user"
-            ? "Analyzes public repos and produces a score for code quality, performance, and memory management."
-            : "Fetches all contributors, maps files to authors via commit history, and stack-ranks developers by code quality score."),
-        e("div", { style: { display: "flex", gap: 12, justifyContent: "center", marginTop: 24, flexWrap: "wrap" } },
-          (mode === "user" ? ["torvalds", "sindresorhus", "tj"] : ["facebook/react", "vercel/next.js", "pallets/flask"]).map(function(name) {
-            return e("button", { key: name, onClick: function() { setS("input", name); },
-              style: { padding: "8px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0f172a", color: "#6366f1", fontSize: 13, cursor: "pointer", fontWeight: 500 }
-            }, mode === "user" ? "Try @" + name : "Try " + name);
-          }))
+      !results && !lb && !loading && !error ? e("div", { style: { textAlign: "center", padding: "80px 20px", position: "relative" } },
+        e("div", { className: "particle-field" },
+          Array.from({ length: 20 }, function(_, i) {
+            return e("span", { key: i, style: { left: (Math.random() * 100) + "%", top: (Math.random() * 100) + "%", "--dx": (Math.random() * 80 - 40) + "px", "--dy": (Math.random() * -80 - 20) + "px", animationDelay: (Math.random() * 4) + "s", animationDuration: (2 + Math.random() * 3) + "s", opacity: 0.15 + Math.random() * 0.2 } });
+          })
+        ),
+        e("div", { style: { position: "relative", zIndex: 1 } },
+          e("div", { style: { fontSize: 72, marginBottom: 16, animation: "float 3s ease-in-out infinite", display: "inline-block" } }, mode === "user" ? "\uD83D\uDD2C" : "\uD83C\uDFC6"),
+          e("h2", { className: "gradient-text", style: { fontSize: 22, fontWeight: 700, marginBottom: 10, display: "inline-block" } },
+            mode === "user" ? "Analyze any developer's code" : "Build a project leaderboard"),
+          e("p", { style: { color: "#64748b", fontSize: 14, maxWidth: 480, margin: "0 auto", lineHeight: 1.7 } },
+            mode === "user"
+              ? "Enter a GitHub username above to analyze their public repos across code quality, runtime performance, and memory management."
+              : "Enter a repository to fetch all contributors, map files to authors, and stack-rank developers by code quality score."),
+          e("div", { style: { display: "flex", gap: 10, justifyContent: "center", marginTop: 28, flexWrap: "wrap" } },
+            (mode === "user" ? ["torvalds", "sindresorhus", "tj"] : ["facebook/react", "vercel/next.js", "pallets/flask"]).map(function(name) {
+              return e("button", { key: name, onClick: function() { setS("input", name); },
+                style: { padding: "10px 20px", borderRadius: 10, border: "1px solid #1e293b", background: "#0f172a", color: "#a78bfa", fontSize: 13, cursor: "pointer", fontWeight: 500, transition: "all .2s ease" }
+              }, mode === "user" ? "\uD83D\uDC64 @" + name : "\uD83D\uDCC1 " + name);
+            })),
+          // Axiom credit in empty state
+          e("div", { style: { marginTop: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, opacity: 0.5 } },
+            e("img", { src: "data:image/png;base64," + AXIOM_LOGO, style: { width: 22, height: 22 } }),
+            e("span", { style: { fontSize: 11, color: "#475569", letterSpacing: "0.5px" } }, "Built by Axiom Group")))
       ) : null
+    ),
+
+    // Footer
+    e("div", { style: { borderTop: "1px solid #1e293b", padding: "24px 0", marginTop: 40, background: "linear-gradient(180deg, #020617 0%, #0f172a 100%)" } },
+      e("div", { style: { maxWidth: 1000, margin: "0 auto", padding: "0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        e("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+          e("img", { src: "data:image/png;base64," + AXIOM_LOGO, style: { width: 28, height: 28, opacity: 0.8 } }),
+          e("div", null,
+            e("span", { style: { fontSize: 13, color: "#94a3b8", fontWeight: 600, letterSpacing: "0.3px" } }, "Built by "),
+            e("span", { className: "gradient-text", style: { fontSize: 13, fontWeight: 700 } }, "Axiom Group"))),
+        e("div", { style: { display: "flex", gap: 16, alignItems: "center" } },
+          e("a", { href: "https://github.com/bdhughes1984/code-analyzer", target: "_blank", style: { color: "#475569", fontSize: 12, textDecoration: "none", transition: "color .2s" } }, "\u2B50 Star on GitHub"),
+          e("span", { style: { color: "#1e293b" } }, "\u00B7"),
+          e("span", { style: { color: "#475569", fontSize: 11 } }, "v1.0"))
+      )
     )
   );
 }
